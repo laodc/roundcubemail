@@ -74,8 +74,8 @@ function rcube_list_widget(list, p)
   this.dblclick_time = 500; // default value on MS Windows is 500
   this.row_init = function(){};  // @deprecated; use list.addEventListener('initrow') instead
 
-  this.pointer_touch_start = 0; // start time of the touch event
-  this.pointer_touch_time = 500; // maximum time a touch should be considered a left mouse button event, after this its something else (eg contextmenu event)
+  this.touch_start_time = 0; // start time of the touch event
+  this.touch_event_time = 500; // maximum time a touch should be considered a left mouse button event, after this its something else (eg contextmenu event)
 
   // overwrite default paramaters
   if (p && typeof p === 'object')
@@ -139,6 +139,8 @@ init: function()
     this.list.parentNode.onclick = function(e) { me.focus(); };
   }
 
+  rcmail.triggerEvent('initlist', { obj: this.list });
+
   return this;
 },
 
@@ -169,14 +171,14 @@ init_row: function(row)
     if ((bw.ie || bw.edge) && bw.pointer) {
       $(row).on('pointerdown', function(e) {
           if (e.pointerType == 'touch') {
-            self.pointer_touch_start = new Date().getTime();
+            self.touch_start_time = new Date().getTime();
             return false;
           }
         })
         .on('pointerup', function(e) {
           if (e.pointerType == 'touch') {
-            var duration = (new Date().getTime() - self.pointer_touch_start);
-            if (duration <= self.pointer_touch_time) {
+            var duration = (new Date().getTime() - self.touch_start_time);
+            if (duration <= self.touch_event_time) {
               self.drag_row(e, this.uid);
               return self.click_row(e, this.uid);
             }
@@ -187,12 +189,14 @@ init_row: function(row)
       row.addEventListener('touchstart', function(e) {
         if (e.touches.length == 1) {
           self.touchmoved = false;
-          self.drag_row(rcube_event.touchevent(e.touches[0]), this.uid)
+          self.drag_row(rcube_event.touchevent(e.touches[0]), this.uid);
+          self.touch_start_time = new Date().getTime();
         }
       }, false);
       row.addEventListener('touchend', function(e) {
         if (e.changedTouches.length == 1) {
-          if (!self.touchmoved && !self.click_row(rcube_event.touchevent(e.changedTouches[0]), this.uid))
+          var duration = (new Date().getTime() - self.touch_start_time);
+          if (!self.touchmoved && duration <= self.touch_event_time && !self.click_row(rcube_event.touchevent(e.changedTouches[0]), this.uid))
             e.preventDefault();
         }
       }, false);
@@ -403,34 +407,7 @@ insert_row: function(row, before)
   }
 
   if (this.checkbox_selection) {
-    var key, cell = document.createElement(this.col_tagname()),
-      chbox = document.createElement('input');
-
-    chbox.type = 'checkbox';
-    chbox.tabIndex = -1;
-    chbox.onchange = function(e) {
-      self.select_row(row.uid, key || CONTROL_KEY, true);
-      e.stopPropagation();
-      key = null;
-    };
-    chbox.onmousedown = function(e) {
-      key = rcube_event.get_modifier(e);
-    };
-
-    cell.className = 'selection';
-    // make the whole cell "touchable" for touch devices
-    cell.onclick = function(e) {
-      if (!$(e.target).is('input')) {
-        key = rcube_event.get_modifier(e);
-        $(chbox).prop('checked', !chbox.checked).change();
-      }
-
-      e.stopPropagation();
-    };
-
-    cell.appendChild(chbox);
-
-    row.insertBefore(cell, row.firstChild);
+    this.insert_checkbox(row);
   }
 
   if (before && tbody.childNodes.length)
@@ -447,7 +424,7 @@ insert_row: function(row, before)
 },
 
 /**
- * 
+ * Update existing record
  */
 update_row: function(id, cols, newid, select)
 {
@@ -473,6 +450,60 @@ update_row: function(id, cols, newid, select)
   }
 },
 
+/**
+ * Add selection checkbox to the list record
+ */
+insert_checkbox: function(row)
+{
+  var key, self = this,
+    cell = document.createElement(this.col_tagname()),
+    chbox = document.createElement('input');
+
+  chbox.type = 'checkbox';
+  chbox.tabIndex = -1;
+  chbox.onchange = function(e) {
+    self.select_row(row.uid, key || CONTROL_KEY, true);
+    e.stopPropagation();
+    key = null;
+  };
+  chbox.onmousedown = function(e) {
+    key = rcube_event.get_modifier(e);
+  };
+
+  cell.className = 'selection';
+  // make the whole cell "touchable" for touch devices
+  cell.onclick = function(e) {
+    if (!$(e.target).is('input')) {
+      key = rcube_event.get_modifier(e);
+      $(chbox).prop('checked', !chbox.checked).change();
+    }
+    e.stopPropagation();
+  };
+
+  cell.appendChild(chbox);
+
+  row.insertBefore(cell, row.firstChild);
+},
+
+/**
+ * Enable checkbox selection
+ */
+enable_checkbox_selection: function()
+{
+  this.checkbox_selection = true;
+
+  // Add checkbox to existing records if any
+  var r, len, cell, row_tag = this.row_tagname().toUpperCase(),
+    rows = this.tbody.childNodes;
+
+  for (r=0, len=rows.length; r<len; r++) {
+    if (rows[r].nodeName == row_tag && (cell = rows[r].firstChild)) {
+      if (cell.className == 'selection')
+        break;
+      this.insert_checkbox(rows[r]);
+    }
+  }
+},
 
 /**
  * Set focus to the list
@@ -1280,12 +1311,11 @@ clear_selection: function(id, no_event)
  */
 get_selection: function(deep)
 {
-  var res;
+  var res = $.merge([], this.selection);
 
-  if (res = this.triggerEvent('getselection', deep))
-    return res;
-
-  res = $.merge([], this.selection);
+  var props = {deep: deep, res: res};
+  if (this.triggerEvent('getselection', props) === false)
+    return props.res;
 
   // return children of selected threads even if only root is selected
   if (deep !== false && res.length) {
@@ -1311,8 +1341,10 @@ get_selection: function(deep)
  */
 get_single_selection: function()
 {
-  if (this.selection.length == 1)
-    return this.selection[0];
+  var selection = this.get_selection(false);
+
+  if (selection.length == 1)
+    return selection[0];
   else
     return null;
 },

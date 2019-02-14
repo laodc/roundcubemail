@@ -42,7 +42,7 @@ $data = array(
     'version' => strval($package->version->release),
     'authors' => array(),
     'repositories' => array(
-        array('type' => 'composer', 'url' => 'http://plugins.roundcube.net'),
+        array('type' => 'composer', 'url' => 'https://plugins.roundcube.net'),
     ),
     'require' => array(
         'php' => '>=5.3.0',
@@ -97,7 +97,7 @@ else if (defined('JSON_PRETTY_PRINT')) {
     echo json_encode($data, $flags);
 }
 else {
-    fputs(STDERR,
+    fwrite(STDERR,
 "FAILED! composer.phar not found in current directory.
 
 Please download it from http://getcomposer.org/download/ or with

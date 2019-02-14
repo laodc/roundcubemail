@@ -23,7 +23,7 @@
 
 class acl extends rcube_plugin
 {
-    public $task = 'settings|addressbook|calendar';
+    public $task = 'settings';
 
     private $rc;
     private $supported = null;
@@ -40,9 +40,7 @@ class acl extends rcube_plugin
 
         // Register hooks
         $this->add_hook('folder_form', array($this, 'folder_form'));
-        // kolab_addressbook plugin
-        $this->add_hook('addressbook_form', array($this, 'folder_form'));
-        $this->add_hook('calendar_form_kolab', array($this, 'folder_form'));
+
         // Plugin actions
         $this->register_action('plugin.acl', array($this, 'acl_actions'));
         $this->register_action('plugin.acl-autocomplete', array($this, 'acl_autocomplete'));
@@ -315,6 +313,8 @@ class acl extends rcube_plugin
     {
         // Create username input
         $attrib['name'] = 'acluser';
+        $class = $attrib['class'];
+        unset($attrib['class']);
 
         $textfield = new html_inputfield($attrib);
 
@@ -342,11 +342,11 @@ class acl extends rcube_plugin
                     . $val);
             }
 
-            $out = html::tag('ul', array('id' => 'usertype', 'class' => $attrib['class']), $ul, html::$common_attrib);
+            $out = html::tag('ul', array('id' => 'usertype', 'class' => $class), $ul, html::$common_attrib);
         }
         // Display text input alone
         else {
-            $out = $fields['user'];
+            $out = html::div($class, $fields['user']);
         }
 
         return $out;

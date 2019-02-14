@@ -66,6 +66,13 @@ class rcube
      */
     public $memcache;
 
+    /**
+     * Instance of Redis class.
+     *
+     * @var Redis
+     */
+    public $redis;
+
    /**
      * Instance of rcube_session class.
      *
@@ -202,86 +209,40 @@ class rcube
     public function get_memcache()
     {
         if (!isset($this->memcache)) {
-            // no memcache support in PHP
-            if (!class_exists('Memcache')) {
-                $this->memcache = false;
-                return false;
-            }
-
-            $this->memcache     = new Memcache;
-            $this->memcache_init();
-
-            // test connection and failover (will result in $this->mc_available == 0 on complete failure)
-            $this->memcache->increment('__CONNECTIONTEST__', 1);  // NOP if key doesn't exist
-
-            if (!$this->mc_available) {
-                $this->memcache = false;
-            }
+            $this->memcache = rcube_cache_memcache::engine();
         }
 
         return $this->memcache;
     }
 
     /**
-     * Get global handle for memcache access
+     * Get global handle for redis access
      *
-     * @return object Memcache
+     * @return object Redis
      */
-    protected function memcache_init()
+    public function get_redis()
     {
-        $this->mc_available = 0;
-
-        // add all configured hosts to pool
-        $pconnect       = $this->config->get('memcache_pconnect', true);
-        $timeout        = $this->config->get('memcache_timeout', 1);
-        $retry_interval = $this->config->get('memcache_retry_interval', 15);
-
-        foreach ($this->config->get('memcache_hosts', array()) as $host) {
-            if (substr($host, 0, 7) != 'unix://') {
-                list($host, $port) = explode(':', $host);
-                if (!$port) $port = 11211;
-            }
-            else {
-                $port = 0;
-            }
-
-            $this->mc_available += intval($this->memcache->addServer(
-                $host, $port, $pconnect, 1, $timeout, $retry_interval, false, array($this, 'memcache_failure')));
+        if (!isset($this->redis)) {
+            $this->redis = rcube_cache_redis::engine();
         }
+
+        return $this->redis;
     }
 
     /**
-     * Callback for memcache failure
-     */
-    public function memcache_failure($host, $port)
-    {
-        static $seen = array();
-
-        // only report once
-        if (!$seen["$host:$port"]++) {
-            $this->mc_available--;
-            self::raise_error(array(
-                'code' => 604, 'type' => 'db',
-                'line' => __LINE__, 'file' => __FILE__,
-                'message' => "Memcache failure on host $host:$port"),
-                true, false);
-        }
-    }
-
-    /**
-     * Initialize and get cache object
+     * Initialize and get user cache object
      *
      * @param string $name   Cache identifier
-     * @param string $type   Cache type ('db', 'apc' or 'memcache')
+     * @param string $type   Cache type ('db', 'apc', 'memcache', 'redis')
      * @param string $ttl    Expiration time for cache items
      * @param bool   $packed Enables/disables data serialization
      *
-     * @return rcube_cache Cache object
+     * @return rcube_cache User cache object
      */
     public function get_cache($name, $type='db', $ttl=0, $packed=true)
     {
         if (!isset($this->caches[$name]) && ($userid = $this->get_user_id())) {
-            $this->caches[$name] = new rcube_cache($type, $userid, $name, $ttl, $packed);
+            $this->caches[$name] = rcube_cache::factory($type, $userid, $name, $ttl, $packed);
         }
 
         return $this->caches[$name];
@@ -293,9 +254,9 @@ class rcube
      * @param string $name   Cache identifier
      * @param bool   $packed Enables/disables data serialization
      *
-     * @return rcube_cache_shared Cache object
+     * @return rcube_cache Shared cache object
      */
-    public function get_cache_shared($name, $packed=true)
+    public function get_cache_shared($name, $packed = true)
     {
         $shared_name = "shared_$name";
 
@@ -313,7 +274,7 @@ class rcube
                 $ttl = $this->config->get('shared_cache_ttl', '10d');
             }
 
-            $this->caches[$shared_name] = new rcube_cache_shared($type, $name, $ttl, $packed);
+            $this->caches[$shared_name] = rcube_cache::factory($type, null, $name, $ttl, $packed);
         }
 
         return $this->caches[$shared_name];
@@ -496,6 +457,7 @@ class rcube
             return;
         }
 
+        $storage     = $this->config->get('session_storage', 'db');
         $sess_name   = $this->config->get('session_name');
         $sess_domain = $this->config->get('session_domain');
         $sess_path   = $this->config->get('session_path');
@@ -523,6 +485,12 @@ class rcube
         ini_set('session.use_only_cookies', 1);
         ini_set('session.cookie_httponly', 1);
 
+        // Make sure session garbage collector is enabled when using custom handlers (#6560)
+        // Note: Use session.gc_divisor to control accuracy
+        if ($storage != 'php' && !ini_get('session.gc_probability')) {
+            ini_set('session.gc_probability', 1);
+        }
+
         // get session driver instance
         $this->session = rcube_session::factory($this->config);
         $this->session->register_gc_handler(array($this, 'gc'));
@@ -539,9 +507,7 @@ class rcube
     public function gc()
     {
         rcube_cache::gc();
-        rcube_cache_shared::gc();
         $this->get_storage()->cache_gc();
-
         $this->gc_temp();
     }
 
@@ -564,7 +530,7 @@ class rcube
 
         if ($tmp && ($dir = opendir($tmp))) {
             while (($fname = readdir($dir)) !== false) {
-                if ($fname[0] == '.') {
+                if (strpos($fname, RCUBE_TEMP_FILE_PREFIX) !== 0) {
                     continue;
                 }
 
@@ -689,9 +655,9 @@ class rcube
             }
         }
         // specified domain
-        else if ($domain) {
+        else if ($domain && isset($this->texts[$domain.'.'.$name])) {
             $ref_domain = $domain;
-            return isset($this->texts[$domain.'.'.$name]);
+            return true;
         }
 
         return false;
@@ -749,6 +715,65 @@ class rcube
         if (is_array($merge) && !empty($merge)) {
             $this->texts = array_merge($this->texts, $merge);
         }
+    }
+
+    /**
+     * Read localized texts from an additional location (plugins, skins).
+     * Then you can use the result as 2nd arg to load_language().
+     *
+     * @param string $dir Directory to search in
+     *
+     * @return array Localization texts
+     */
+    public function read_localization($dir)
+    {
+        $lang   = $_SESSION['language'];
+        $langs  = array_unique(array('en_US', $lang));
+        $locdir = slashify($dir);
+        $texts  = array();
+
+        // Language aliases used to find localization in similar lang, see below
+        $aliases = array(
+            'de_CH' => 'de_DE',
+            'es_AR' => 'es_ES',
+            'fa_AF' => 'fa_IR',
+            'nl_BE' => 'nl_NL',
+            'pt_BR' => 'pt_PT',
+            'zh_CN' => 'zh_TW',
+        );
+
+        // use buffering to handle empty lines/spaces after closing PHP tag
+        ob_start();
+
+        foreach ($langs as $lng) {
+            $fpath = $locdir . $lng . '.inc';
+            if (is_file($fpath) && is_readable($fpath)) {
+                include $fpath;
+                $texts = (array) $labels + (array) $messages + (array) $texts;
+            }
+            else if ($lng != 'en_US') {
+                // Find localization in similar language (#1488401)
+                $alias = null;
+                if (!empty($aliases[$lng])) {
+                    $alias = $aliases[$lng];
+                }
+                else if ($key = array_search($lng, $aliases)) {
+                    $alias = $key;
+                }
+
+                if (!empty($alias)) {
+                    $fpath = $locdir . $alias . '.inc';
+                    if (is_file($fpath) && is_readable($fpath)) {
+                        include $fpath;
+                        $texts = (array) $labels + (array) $messages + (array) $texts;
+                    }
+                }
+            }
+        }
+
+        ob_end_clean();
+
+        return $texts;
     }
 
     /**
@@ -957,7 +982,7 @@ class rcube
         $sess_tok = $this->get_request_token();
 
         // ajax requests
-        if (rcube_utils::request_header('X-Roundcube-Request') == $sess_tok) {
+        if (rcube_utils::request_header('X-Roundcube-Request') === $sess_tok) {
             return true;
         }
 
@@ -972,7 +997,7 @@ class rcube
         $token   = rcube_utils::get_input_value('_token', $mode);
         $sess_id = $_COOKIE[ini_get('session.name')];
 
-        if (empty($sess_id) || $token != $sess_tok) {
+        if (empty($sess_id) || $token !== $sess_tok) {
             $this->request_status = self::REQUEST_ERROR_TOKEN;
             return false;
         }
@@ -1044,7 +1069,7 @@ class rcube
 
     /**
      * When you're going to sleep the script execution for a longer time
-     * it is good to close all external connections (sql, memcache, SMTP, IMAP).
+     * it is good to close all external connections (sql, memcache, redis, SMTP, IMAP).
      *
      * No action is required on wake up, all connections will be
      * re-established automatically.
@@ -1073,6 +1098,10 @@ class rcube
 
         if ($this->smtp) {
             $this->smtp->disconnect();
+        }
+
+        if ($this->redis) {
+            $this->redis->close();
         }
     }
 
@@ -1282,12 +1311,19 @@ class rcube
     public static function raise_error($arg = array(), $log = false, $terminate = false)
     {
         // handle PHP exceptions
-        if (is_object($arg) && is_a($arg, 'Exception')) {
+        if ($arg instanceof Exception) {
             $arg = array(
                 'code' => $arg->getCode(),
                 'line' => $arg->getLine(),
                 'file' => $arg->getFile(),
                 'message' => $arg->getMessage(),
+            );
+        }
+        else if ($arg instanceof PEAR_Error) {
+            $info = $arg->getUserInfo();
+            $arg  = array(
+                'code'    => $arg->getCode(),
+                'message' => $arg->getMessage() . ($info ? ': ' . $info : ''),
             );
         }
         else if (is_string($arg)) {
@@ -1299,6 +1335,13 @@ class rcube
         }
 
         $cli = php_sapi_name() == 'cli';
+
+        $arg['cli'] = $cli;
+        $arg['log'] = $log;
+        $arg['terminate'] = $terminate;
+
+        // send error to external error tracking tool
+        $arg = self::$instance->plugins->exec_hook('raise_error', $arg);
 
         // installer
         if (!$cli && class_exists('rcmail_install', false)) {
@@ -1330,7 +1373,7 @@ class rcube
     }
 
     /**
-     * Report error according to configured debug_level
+     * Log an error
      *
      * @param array $arg_arr Named parameters
      * @see self::raise_error()
@@ -1338,65 +1381,38 @@ class rcube
     public static function log_bug($arg_arr)
     {
         $program = strtoupper($arg_arr['type'] ?: 'php');
-        $level   = self::get_instance()->config->get('debug_level');
-
-        // disable errors for ajax requests, write to log instead (#1487831)
-        if (($level & 4) && !empty($_REQUEST['_remote'])) {
-            $level = ($level ^ 4) | 1;
-        }
 
         // write error to local log file
-        if (($level & 1) || !empty($arg_arr['fatal'])) {
-            if ($_SERVER['REQUEST_METHOD'] == 'POST') {
-                foreach (array('_task', '_action') as $arg) {
-                    if ($_POST[$arg] && !$_GET[$arg]) {
-                        $post_query[$arg] = $_POST[$arg];
-                    }
-                }
-
-                if (!empty($post_query)) {
-                    $post_query = (strpos($_SERVER['REQUEST_URI'], '?') != false ? '&' : '?')
-                        . http_build_query($post_query, '', '&');
+        if ($_SERVER['REQUEST_METHOD'] == 'POST') {
+            foreach (array('_task', '_action') as $arg) {
+                if ($_POST[$arg] && !$_GET[$arg]) {
+                    $post_query[$arg] = $_POST[$arg];
                 }
             }
 
-            $log_entry = sprintf("%s Error: %s%s (%s %s)",
-                $program,
-                $arg_arr['message'],
-                $arg_arr['file'] ? sprintf(' in %s on line %d', $arg_arr['file'], $arg_arr['line']) : '',
-                $_SERVER['REQUEST_METHOD'],
-                $_SERVER['REQUEST_URI'] . $post_query);
-
-            if (!self::write_log('errors', $log_entry)) {
-                // send error to PHPs error handler if write_log didn't succeed
-                trigger_error($arg_arr['message'], E_USER_WARNING);
+            if (!empty($post_query)) {
+                $post_query = (strpos($_SERVER['REQUEST_URI'], '?') != false ? '&' : '?')
+                    . http_build_query($post_query, '', '&');
             }
         }
 
-        // report the bug to the global bug reporting system
-        if ($level & 2) {
-            // TODO: Send error via HTTP
-        }
+        $log_entry = sprintf("%s Error: %s%s (%s %s)",
+            $program,
+            $arg_arr['message'],
+            $arg_arr['file'] ? sprintf(' in %s on line %d', $arg_arr['file'], $arg_arr['line']) : '',
+            $_SERVER['REQUEST_METHOD'],
+            $_SERVER['REQUEST_URI'] . $post_query);
 
-        // show error if debug_mode is on
-        if ($level & 4) {
-            print "<b>$program Error";
-
-            if (!empty($arg_arr['file']) && !empty($arg_arr['line'])) {
-                print " in $arg_arr[file] ($arg_arr[line])";
-            }
-
-            print ':</b>&nbsp;';
-            print nl2br($arg_arr['message']);
-            print '<br />';
-            flush();
+        if (!self::write_log('errors', $log_entry)) {
+            // send error to PHPs error handler if write_log didn't succeed
+            trigger_error($arg_arr['message'], E_USER_WARNING);
         }
     }
 
     /**
      * Write debug info to the log
      *
-     * @param string $engine Engine type - file name (memcache, apc)
+     * @param string $engine Engine type - file name (memcache, apc, redis)
      * @param string $data   Data string to log
      * @param bool   $result Operation result
      */
@@ -1480,8 +1496,6 @@ class rcube
         else if (isset($_SESSION['user_id'])) {
             return $_SESSION['user_id'];
         }
-
-        return null;
     }
 
     /**
@@ -1589,14 +1603,15 @@ class rcube
     /**
      * Send the given message using the configured method.
      *
-     * @param object $message   Reference to Mail_MIME object
-     * @param string $from      Sender address string
-     * @param array  $mailto    Array of recipient address strings
-     * @param array  $error     SMTP error array (reference)
-     * @param string $body_file Location of file with saved message body (reference),
-     *                          used when delay_file_io is enabled
-     * @param array  $options   SMTP options (e.g. DSN request)
-     * @param bool   $disconnect Close SMTP connection ASAP
+     * @param object       $message    Reference to Mail_MIME object
+     * @param string       $from       Sender address string
+     * @param array|string $mailto     Either a comma-separated list of recipients (RFC822 compliant),
+     *                                 or an array of recipients, each RFC822 valid
+     * @param array        $error      SMTP error array (reference)
+     * @param string       $body_file  Location of file with saved message body (reference),
+     *                                 used when delay_file_io is enabled
+     * @param array        $options    SMTP options (e.g. DSN request)
+     * @param bool         $disconnect Close SMTP connection ASAP
      *
      * @return boolean Send status.
      */
@@ -1642,8 +1657,7 @@ class rcube
 
         if ($message->getParam('delay_file_io')) {
             // use common temp dir
-            $temp_dir    = $this->config->get('temp_dir');
-            $body_file   = tempnam($temp_dir, 'rcmMsg');
+            $body_file   = rcube_utils::temp_filename('msg');
             $mime_result = $message->saveMessageBody($body_file);
 
             if (is_a($mime_result, 'PEAR_Error')) {
@@ -1706,7 +1720,10 @@ class rcube
             $this->smtp->disconnect();
         }
 
-        $message->headers($headers, true);
+        // Add Bcc header back
+        if (!empty($headers['Bcc'])) {
+            $message->headers(array('Bcc' => $headers['Bcc']), true);
+        }
 
         return $sent;
     }

@@ -246,8 +246,11 @@ class rcube_washtml
         // Remove unwanted white-space characters so regular expressions below work better
         $style = preg_replace('/[\n\r\s\t]+/', ' ', $style);
 
+        // Decode insecure character sequences
+        $style = rcube_utils::xss_entity_decode($style);
+
         foreach (explode(';', $style) as $declaration) {
-            if (preg_match('/^\s*([a-z\-]+)\s*:\s*(.*)\s*$/i', $declaration, $match)) {
+            if (preg_match('/^\s*([a-z\\\-]+)\s*:\s*(.*)\s*$/i', $declaration, $match)) {
                 $cssid = $match[1];
                 $str   = $match[2];
                 $value = '';
@@ -256,7 +259,7 @@ class rcube_washtml
                     if (preg_match('/^url\(/i', $val)) {
                         if (preg_match('/^url\(\s*[\'"]?([^\'"\)]*)[\'"]?\s*\)/iu', $val, $match)) {
                             if ($url = $this->wash_uri($match[1])) {
-                                $value .= ' url(' . htmlspecialchars($url, ENT_QUOTES) . ')';
+                                $value .= ' url(' . htmlspecialchars($url, ENT_QUOTES, $this->config['charset']) . ')';
                             }
                         }
                     }
@@ -329,8 +332,9 @@ class rcube_washtml
                     if (preg_match('/^[a-z:]*url\(/i', $val)) {
                         if (preg_match('/^([a-z:]*url)\(\s*[\'"]?([^\'"\)]*)[\'"]?\s*\)/iu', $value, $match)) {
                             if ($url = $this->wash_uri($match[2])) {
-                                $result .= ' ' . $attr->nodeName . '="' . $match[1] . '(' . htmlspecialchars($url, ENT_QUOTES) . ')'
-                                     . substr($val, strlen($match[0])) . '"';
+                                $result .= ' ' . $attr->nodeName . '="' . $match[1]
+                                    . '(' . htmlspecialchars($url, ENT_QUOTES, $this->config['charset']) . ')'
+                                    . substr($val, strlen($match[0])) . '"';
                                 continue;
                             }
                         }
@@ -350,14 +354,14 @@ class rcube_washtml
                 }
 
                 if ($out !== null && $out !== '') {
-                    $result .= ' ' . $attr->nodeName . '="' . htmlspecialchars($out, ENT_QUOTES) . '"';
+                    $result .= ' ' . $attr->nodeName . '="' . htmlspecialchars($out, ENT_QUOTES | ENT_SUBSTITUTE, $this->config['charset']) . '"';
                 }
                 else if ($value) {
-                    $washed[] = htmlspecialchars($attr->nodeName, ENT_QUOTES);
+                    $washed[] = htmlspecialchars($attr->nodeName, ENT_QUOTES, $this->config['charset']);
                 }
             }
             else {
-                $washed[] = htmlspecialchars($attr->nodeName, ENT_QUOTES);
+                $washed[] = htmlspecialchars($attr->nodeName, ENT_QUOTES, $this->config['charset']);
             }
         }
 
@@ -415,7 +419,7 @@ class rcube_washtml
         return $attr == 'background'
             || $attr == 'color-profile' // SVG
             || ($attr == 'poster' && $tag == 'video')
-            || ($attr == 'src' && preg_match('/^(img|source|input|video|audio)$/i', $tag))
+            || ($attr == 'src' && preg_match('/^(img|image|source|input|video|audio)$/i', $tag))
             || ($tag == 'image' && $attr == 'href'); // SVG
     }
 
@@ -490,7 +494,7 @@ class rcube_washtml
                         }
                     }
                     else if ($tagName == 'textarea' && strpos($content, '<') !== false) {
-                        $content = htmlspecialchars($content, ENT_QUOTES);
+                        $content = htmlspecialchars($content, ENT_QUOTES | ENT_SUBSTITUTE, $this->config['charset']);
                     }
 
                     $dump .= $this->wash_attribs($node);
@@ -503,10 +507,10 @@ class rcube_washtml
                     }
                 }
                 else if (isset($this->_ignore_elements[$tagName])) {
-                    $dump .= '<!-- ' . htmlspecialchars($node->nodeName, ENT_QUOTES) . ' not allowed -->';
+                    $dump .= '<!-- ' . htmlspecialchars($node->nodeName, ENT_QUOTES, $this->config['charset']) . ' not allowed -->';
                 }
                 else {
-                    $dump .= '<!-- ' . htmlspecialchars($node->nodeName, ENT_QUOTES) . ' ignored -->';
+                    $dump .= '<!-- ' . htmlspecialchars($node->nodeName, ENT_QUOTES, $this->config['charset']) . ' ignored -->';
                     $dump .= $this->dumpHtml($node, $level); // ignore tags not its content
                 }
                 break;
@@ -516,7 +520,7 @@ class rcube_washtml
                 break;
 
             case XML_TEXT_NODE:
-                $dump .= htmlspecialchars($node->nodeValue);
+                $dump .= htmlspecialchars($node->nodeValue, ENT_COMPAT | ENT_HTML401 | ENT_SUBSTITUTE, $this->config['charset']);
                 break;
 
             case XML_HTML_DOCUMENT_NODE:
@@ -535,8 +539,6 @@ class rcube_washtml
      */
     public function wash($html)
     {
-        // Charset seems to be ignored (probably if defined in the HTML document)
-        $node = new DOMDocument('1.0', $this->config['charset']);
         $this->extlinks = false;
 
         $html = $this->cleanup($html);
@@ -555,15 +557,22 @@ class rcube_washtml
         // SVG need to be parsed as XML
         $this->is_xml = stripos($html, '<html') === false && stripos($html, '<svg') !== false;
         $method       = $this->is_xml ? 'loadXML' : 'loadHTML';
-        $options      = 0;
 
-        // Use optimizations if supported
-        if (PHP_VERSION_ID >= 50400) {
-            $options = LIBXML_PARSEHUGE | LIBXML_COMPACT | LIBXML_NONET;
-            @$node->{$method}($html, $options);
+        // DOMDocument does not support HTML5, try Masterminds parser if available
+        if (!$this->is_xml && class_exists('Masterminds\HTML5')) {
+            try {
+                $html5 = new Masterminds\HTML5();
+                $node  = $html5->loadHTML($html);
+            }
+            catch (Exception $e) {
+                // ignore, fallback to DOMDocument
+            }
         }
-        else {
-            @$node->{$method}($html);
+
+        if (empty($node)) {
+            // Charset seems to be ignored (probably if defined in the HTML document)
+            $node = new DOMDocument('1.0', $this->config['charset']);
+            @$node->{$method}($html, LIBXML_PARSEHUGE | LIBXML_COMPACT | LIBXML_NONET);
         }
 
         return $this->dumpHtml($node);
@@ -606,7 +615,12 @@ class rcube_washtml
             '<html>',
         );
 
-        $html = preg_replace($html_search, $html_replace, trim($html));
+        $html = preg_replace($html_search, $html_replace, $html);
+
+        $err = array('line' => __LINE__, 'file' => __FILE__, 'message' => "Could not clean up HTML!");
+        if ($html === null && rcube_utils::preg_error($err)) {
+            return '';
+        }
 
         // Replace all of those weird MS Word quotes and other high characters
         $badwordchars = array(
@@ -629,31 +643,16 @@ class rcube_washtml
 
         $html = str_replace($badwordchars, $fixedwordchars, $html);
 
-        // PCRE errors handling (#1486856), should we use something like for every preg_* use?
-        if ($html === null && ($preg_error = preg_last_error()) != PREG_NO_ERROR) {
-            $errstr = "Could not clean up HTML message! PCRE Error: $preg_error.";
-
-            if ($preg_error == PREG_BACKTRACK_LIMIT_ERROR) {
-                $errstr .= " Consider raising pcre.backtrack_limit!";
-            }
-            if ($preg_error == PREG_RECURSION_LIMIT_ERROR) {
-                $errstr .= " Consider raising pcre.recursion_limit!";
-            }
-
-            rcube::raise_error(array('code' => 620, 'type' => 'php',
-                'line' => __LINE__, 'file' => __FILE__,
-                'message' => $errstr), true, false);
-
-            return '';
-        }
+        // FIXME: HTML comments handling could be better. The code below can break comments (#6464),
+        //        we should probably do not modify content inside comments at all.
 
         // fix (unknown/malformed) HTML tags before "wash"
         $html = preg_replace_callback('/(<(?!\!)[\/]*)([^\s>]+)([^>]*)/', array($this, 'html_tag_callback'), $html);
 
         // Remove invalid HTML comments (#1487759)
-        // Don't remove valid conditional comments
-        // Don't remove MSOutlook (<!-->) conditional comments (#1489004)
-        $html = preg_replace('/<!--[^-<>\[\n]+>/', '', $html);
+        // Note: We don't want to remove valid comments, conditional comments
+        // and MSOutlook comments (<!-->)
+        $html = preg_replace('/<!--[a-zA-Z0-9]+>/', '', $html);
 
         // fix broken nested lists
         self::fix_broken_lists($html);
@@ -669,9 +668,15 @@ class rcube_washtml
      */
     public static function html_tag_callback($matches)
     {
+        // It might be an ending of a comment, ignore (#6464)
+        if (substr($matches[3], -2) == '--') {
+            $matches[0] = '';
+            return implode('', $matches);
+        }
+
         $tagname = $matches[2];
         $tagname = preg_replace(array(
-            '/:.*$/',               // Microsoft's Smart Tags <st1:xxxx>
+            '/:.*$/',                // Microsoft's Smart Tags <st1:xxxx>
             '/[^a-z0-9_\[\]\!?-]/i', // forbidden characters
         ), '', $tagname);
 

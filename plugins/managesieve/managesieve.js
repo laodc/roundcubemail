@@ -120,9 +120,9 @@ rcube_webmail.prototype.managesieve_add = function()
 
 rcube_webmail.prototype.managesieve_del = function()
 {
+  var id = this.filters_list.get_single_selection();
   this.confirm_dialog(this.get_label('managesieve.filterdeleteconfirm'), 'delete', function(e, ref) {
-      var id = ref.filters_list.get_single_selection(),
-        post = '_act=delete&_fid=' + ref.filters_list.rows[id].uid,
+      var post = '_act=delete&_fid=' + ref.filters_list.rows[id].uid,
         lock = ref.set_busy(true, 'loading');
 
       ref.http_post('plugin.managesieve-action', post, lock);
@@ -157,12 +157,16 @@ rcube_webmail.prototype.managesieve_select = function(list)
 // Set selection
 rcube_webmail.prototype.managesieve_setselect = function(list)
 {
-  this.show_contentframe(false);
-  this.filters_list.clear(true);
   this.enable_command('plugin.managesieve-setdel', list.rowcount > 1 && $.inArray('delete_set', rcmail.env.managesieve_disabled_actions) == -1);
   this.enable_command('plugin.managesieve-setact', list.rowcount > 0 && $.inArray('enable_disable_set', rcmail.env.managesieve_disabled_actions) == -1);
   this.enable_command('plugin.managesieve-setget', list.rowcount > 0 && $.inArray('delete_set', rcmail.env.managesieve_disabled_actions) == -1);
   this.enable_command('plugin.managesieve-seteditraw', list.rowcount > 0 && this.env.raw_sieve_editor);
+
+ if (rcmail.env.contextmenu_opening)
+   return;
+
+  this.show_contentframe(false);
+  this.filters_list.clear(true);
 
   var id = list.get_single_selection();
   if (id != null) {
@@ -219,9 +223,9 @@ rcube_webmail.prototype.managesieve_setact = function()
 // Set delete request
 rcube_webmail.prototype.managesieve_setdel = function()
 {
+  var id = this.filtersets_list.get_single_selection();
   this.confirm_dialog(this.get_label('managesieve.setdeleteconfirm'), 'delete', function(e, ref) {
-      var id = ref.filtersets_list.get_single_selection(),
-        script = ref.env.filtersets[id],
+      var script = ref.env.filtersets[id],
         lock = ref.set_busy(true, 'loading');
 
       ref.http_post('plugin.managesieve-action', '_act=setdel&_set=' + urlencode(script), lock);
@@ -422,9 +426,9 @@ rcube_webmail.prototype.load_managesieveframe = function(add_url, reset)
     this.reset_filters_list();
 
   if (this.env.contentframe && window.frames && window.frames[this.env.contentframe]) {
-    var lock = this.set_busy(true, 'loading');
+    var lock = this.set_busy(true, 'loading'),
+      target = window.frames[this.env.contentframe];
 
-    target = window.frames[this.env.contentframe];
     target.location.href = this.env.comm_path
       + '&_action=plugin.managesieve-action&_framed=1&_unlock=' + lock
       + (add_url ? ('&' + add_url) : '');
@@ -762,7 +766,9 @@ function action_type_select(id)
       vacation: document.getElementById('action_vacation' + id),
       forward: document.getElementById('action_forward' + id),
       set: document.getElementById('action_set' + id),
-      notify: document.getElementById('action_notify' + id)
+      notify: document.getElementById('action_notify' + id),
+      addheader: document.getElementById('action_addheader' + id),
+      deleteheader: document.getElementById('action_deleteheader' + id)
     };
 
   if (v == 'fileinto' || v == 'fileinto_copy') {
@@ -777,17 +783,8 @@ function action_type_select(id)
   else if (v.match(/^(add|set|remove)flag$/)) {
     enabled.flags = 1;
   }
-  else if (v == 'vacation') {
-    enabled.vacation = 1;
-  }
-  else if (v == 'forward') {
-    enabled.forward = 1;
-  }
-  else if (v == 'set') {
-    enabled.set = 1;
-  }
-  else if (v == 'notify') {
-    enabled.notify = 1;
+  else if (v.match(/^(vacation|forward|set|notify|addheader|deleteheader)$/)) {
+    enabled[v] = 1;
   }
 
   for (var x in elems) {
@@ -991,7 +988,7 @@ function sieve_form_init()
   });
 
   // initialize rules form(s)
-  $('[name="_header[]"]', form).each(function() {
+  $('[name^="_header"]', form).each(function() {
     if (/([0-9]+)$/.test(this.id)) {
       rule_header_select(RegExp.$1);
     }

@@ -34,6 +34,7 @@ window.rcmail && rcmail.addEventListener('init', function(evt) {
 
             rcmail.addEventListener('responseafterplugin.enigmakeys', function() {
                 rcmail.enable_command('plugin.enigma-key-export', rcmail.env.rowcount > 0);
+                rcmail.triggerEvent('listupdate', {list: rcmail.keys_list, rowcount: rcmail.env.rowcount});
             });
 
             if (rcmail.gui_objects.importform) {
@@ -59,12 +60,20 @@ window.rcmail && rcmail.addEventListener('init', function(evt) {
             });
 
             $('a.button.enigma').prop('tabindex', $('#messagetoolbar > a:first').prop('tabindex'));
-        }
 
-        $.each(['encrypt', 'sign'], function() {
-            if (rcmail.env['enigma_force_' + this])
-                $('[name="_enigma_' + this + '"]').prop('checked', true);
-        });
+            $.each(['encrypt', 'sign'], function() {
+                var opt = this, input = $('#enigma' + opt + 'opt');
+
+                if (rcmail.env['enigma_force_' + opt]) {
+                    input.prop('checked', true);
+                }
+
+                // Compose status bar in Elastic
+                if (window.UI && UI.compose_status) {
+                    input.on('change', function() { UI.compose_status(opt, this.checked); }).trigger('change');
+                }
+            });
+        }
 
         if (rcmail.env.enigma_password_request) {
             rcmail.enigma_password_request(rcmail.env.enigma_password_request);
@@ -151,7 +160,7 @@ rcube_webmail.prototype.enigma_key_create_save = function()
 
     // generate keys
     // use OpenPGP.js if browser supports required features
-    if (window.openpgp && window.crypto && (window.crypto.getRandomValues || window.crypto.subtle)) {
+    if (window.openpgp && (window.msCrypto || (window.crypto && (window.crypto.getRandomValues || window.crypto.subtle)))) {
         lock = this.set_busy(true, 'enigma.keygenerating');
         options = {
             numBits: size,
@@ -162,7 +171,7 @@ rcube_webmail.prototype.enigma_key_create_save = function()
         openpgp.generateKey(options).then(function(keypair) {
             // success
             var post = {_a: 'import', _keys: keypair.privateKeyArmored, _generated: 1,
-                _passwd: password, _keyid: keypair.key.primaryKey.fingerprint};
+                _passwd: password, _keyid: keypair.key.primaryKey.getFingerprint()};
 
             // send request to server
             rcmail.http_post('plugin.enigmakeys', post, lock);
@@ -245,8 +254,15 @@ rcube_webmail.prototype.enigma_export = function(selected)
                     rcmail.enigma_export_submit(args);
                     $(this).remove();
                 }
+            },
+            {
+                'class': 'cancel',
+                text: this.get_label('close'),
+                click: function(e) {
+                    $(this).remove();
+                }
             }],
-            {width: 400}
+            {width: 500}
         );
 
     this.enigma_export_submit(args);
@@ -432,6 +448,7 @@ rcube_webmail.prototype.enigma_clear_list = function(reset_frame)
         this.keys_list.clear(true);
 
     this.enable_command('plugin.enigma-key-delete', 'plugin.enigma-key-delete-selected', false);
+    this.triggerEvent('listupdate', {list: this.keys_list, rowcount: this.keys_list.rowcount});
 };
 
 // Adds a row to the list
@@ -519,7 +536,7 @@ rcube_webmail.prototype.enigma_password_request = function(data)
     var ref = this,
         msg = this.get_label('enigma.enterkeypass'),
         myprompt = $('<div class="prompt">'),
-        myprompt_content = $('<div class="message">')
+        myprompt_content = $('<p class="message">')
             .appendTo(myprompt),
         myprompt_input = $('<input>').attr({type: 'password', size: 30})
             .keypress(function(e) {
@@ -540,7 +557,7 @@ rcube_webmail.prototype.enigma_password_request = function(data)
 
     this.show_popup_dialog(myprompt, this.get_label('enigma.enterkeypasstitle'),
         [{
-            text: this.get_label('save'),
+            text: this.get_label('ok'),
             'class': 'mainaction save unlock',
             click: function(e) {
                 e.stopPropagation();

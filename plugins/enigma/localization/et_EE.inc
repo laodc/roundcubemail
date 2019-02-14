@@ -15,6 +15,7 @@
 
  For translation see https://www.transifex.com/roundcube/roundcube-webmail/plugin-enigma/
 */
+$labels['encryption'] = 'Krüpteerimine';
 $labels['enigmacerts'] = 'S/MIME sertifikaadid';
 $labels['enigmakeys'] = 'PGP võtmed';
 $labels['keyname'] = 'Nimi';
@@ -35,13 +36,11 @@ $labels['subkeyusage'] = 'Kasutus';
 $labels['expiresnever'] = 'mitte kunagi';
 $labels['unknown'] = 'teadmata';
 $labels['userid'] = 'ID';
+$labels['importkeys'] = 'Impordi võti';
 $labels['keyremove'] = 'Eemalda';
 $labels['keydisable'] = 'Keela';
 $labels['keychpass'] = 'Muuda parooli';
-$labels['newkeyident'] = 'Identiteet:';
-$labels['newkeypass'] = 'Parool:';
-$labels['newkeypassconfirm'] = 'Kinnita parool:';
-$labels['newkeysize'] = 'Võtme suurus:';
+$labels['newkeypass'] = 'Parool';
 $labels['key2048'] = '2048 bitti - vailimisi';
 $labels['key4096'] = '4096 bitti - turvalisem';
 $labels['keygenerating'] = 'Võtmete genereerimine...';

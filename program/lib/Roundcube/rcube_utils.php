@@ -37,11 +37,12 @@ class rcube_utils
     /**
      * Helper method to set a cookie with the current path and host settings
      *
-     * @param string Cookie name
-     * @param string Cookie value
-     * @param string Expiration time
+     * @param string $name      Cookie name
+     * @param string $value     Cookie value
+     * @param int    $exp       Expiration time
+     * @param bool   $http_only HTTP Only
      */
-    public static function setcookie($name, $value, $exp = 0)
+    public static function setcookie($name, $value, $exp = 0, $http_only = true)
     {
         if (headers_sent()) {
             return;
@@ -50,13 +51,13 @@ class rcube_utils
         $cookie = session_get_cookie_params();
         $secure = $cookie['secure'] || self::https_check();
 
-        setcookie($name, $value, $exp, $cookie['path'], $cookie['domain'], $secure, true);
+        setcookie($name, $value, $exp, $cookie['path'], $cookie['domain'], $secure, $http_only);
     }
 
     /**
      * E-mail address validation.
      *
-     * @param string $email Email address
+     * @param string  $email     Email address
      * @param boolean $dns_check True to check dns
      *
      * @return boolean True on success, False if address is invalid
@@ -122,18 +123,16 @@ class rcube_utils
 
             $rcube = rcube::get_instance();
 
-            if (!$dns_check || !$rcube->config->get('email_dns_check')) {
+            if (!$dns_check || !function_exists('checkdnsrr') || !$rcube->config->get('email_dns_check')) {
                 return true;
             }
 
-            // find MX record(s)
-            if (!function_exists('getmxrr') || getmxrr($domain_part, $mx_records)) {
-                return true;
-            }
-
-            // find any DNS record
-            if (!function_exists('checkdnsrr') || checkdnsrr($domain_part, 'ANY')) {
-                return true;
+            // Check DNS record(s)
+            // Note: We can't use ANY (#6581)
+            foreach (array('A', 'MX', 'CNAME', 'AAAA') as $type) {
+                if (checkdnsrr($domain_part, $type)) {
+                    return true;
+                }
             }
         }
 
@@ -150,19 +149,6 @@ class rcube_utils
     public static function check_ip($ip)
     {
         return filter_var($ip, FILTER_VALIDATE_IP) !== false;
-    }
-
-    /**
-     * Check whether the HTTP referer matches the current request
-     *
-     * @return boolean True if referer is the same host+path, false if not
-     */
-    public static function check_referer()
-    {
-        $uri     = parse_url($_SERVER['REQUEST_URI']);
-        $referer = parse_url(self::request_header('Referer'));
-
-        return $referer['host'] == self::request_header('Host') && $referer['path'] == $uri['path'];
     }
 
     /**
@@ -518,7 +504,8 @@ class rcube_utils
 
         $out = html_entity_decode(html_entity_decode($content));
         $out = trim(preg_replace('/(^<!--|-->$)/', '', trim($out)));
-        $out = preg_replace_callback('/\\\([0-9a-f]{4})/i', $callback, $out);
+        $out = preg_replace_callback('/\\\([0-9a-f]{2,6})\s*/i', $callback, $out);
+        $out = preg_replace('/\\\([^0-9a-f])/i', '\\1', $out);
         $out = preg_replace('#/\*.*\*/#Ums', '', $out);
         $out = strip_tags($out);
 
@@ -806,7 +793,8 @@ class rcube_utils
         // try to parse string with DateTime first
         if (!empty($date)) {
             try {
-                $dt = $timezone ? new DateTime($date, $timezone) : new DateTime($date);
+                $_date = preg_match('/^[0-9]+$/', $date) ? "@$date" : $date;
+                $dt    = $timezone ? new DateTime($_date, $timezone) : new DateTime($_date);
             }
             catch (Exception $e) {
                 // ignore
@@ -848,11 +836,13 @@ class rcube_utils
         // Clean malformed data
         $date = preg_replace(
             array(
+                '/\(.*\)/',                                 // remove RFC comments
                 '/GMT\s*([+-][0-9]+)/',                     // support non-standard "GMTXXXX" literal
-                '/[^a-z0-9\x20\x09:+-\/]/i',                // remove any invalid characters
+                '/[^a-z0-9\x20\x09:\/\.+-]/i',              // remove any invalid characters
                 '/\s*(Mon|Tue|Wed|Thu|Fri|Sat|Sun)\s*/i',   // remove weekday names
             ),
             array(
+                '',
                 '\\1',
                 '',
                 '',
@@ -908,9 +898,13 @@ class rcube_utils
     }
 
     /**
-     * Wrapper for idn_to_ascii with support for e-mail address
+     * Wrapper for idn_to_ascii with support for e-mail address.
+     *
+     * Warning: Domain names may be lowercase'd.
+     * Warning: An empty string may be returned on invalid domain.
      *
      * @param string $str Decoded e-mail address
+     *
      * @return string Encoded e-mail address
      */
     public static function idn_to_ascii($str)
@@ -922,6 +916,7 @@ class rcube_utils
      * Wrapper for idn_to_utf8 with support for e-mail address
      *
      * @param string $str Decoded e-mail address
+     *
      * @return string Encoded e-mail address
      */
     public static function idn_to_utf8($str)
@@ -929,22 +924,22 @@ class rcube_utils
         return self::idn_convert($str, false);
     }
 
-
     /**
-     * Convert a string to ascii or utf8
+     * Convert a string to ascii or utf8 (using IDNA standard)
      *
-     * @param string $input Decoded e-mail address
+     * @param string  $input  Decoded e-mail address
      * @param boolean $is_utf Convert by idn_to_ascii if true and idn_to_utf8 if false
+     *
      * @return string Encoded e-mail address
      */
     public static function idn_convert($input, $is_utf = false)
     {
         if ($at = strpos($input, '@')) {
-            $user = substr($input, 0, $at);
+            $user   = substr($input, 0, $at);
             $domain = substr($input, $at + 1);
         }
         else {
-            $user = '';
+            $user   = '';
             $domain = $input;
         }
 
@@ -953,10 +948,16 @@ class rcube_utils
         $variant = defined('INTL_IDNA_VARIANT_UTS46') ? INTL_IDNA_VARIANT_UTS46 : null;
         $options = 0;
 
+        // Because php-intl extension lowercases domains and return false
+        // on invalid input (#6224), we skip conversion when not needed
+        // for compatibility with our Net_IDNA2 wrappers in bootstrap.php
+
         if ($is_utf) {
-            $domain = idn_to_ascii($domain, $options, $variant);
+            if (preg_match('/[^\x20-\x7E]/', $domain)) {
+                $domain = idn_to_ascii($domain, $options, $variant);
+            }
         }
-        else {
+        else if (preg_match('/(^|\.)xn--/i', $domain)) {
             $domain = idn_to_utf8($domain, $options, $variant);
         }
 
@@ -1347,5 +1348,78 @@ class rcube_utils
         }
 
         return $max_filesize;
+    }
+
+    /**
+     * Detect and log last PREG operation error
+     *
+     * @param array $error     Error data (line, file, code, message)
+     * @param bool  $terminate Stop script execution
+     *
+     * @return bool True on error, False otherwise
+     */
+    public static function preg_error($error = array(), $terminate = false)
+    {
+        if (($preg_error = preg_last_error()) != PREG_NO_ERROR) {
+            $errstr = "PCRE Error: $preg_error.";
+
+            if ($preg_error == PREG_BACKTRACK_LIMIT_ERROR) {
+                $errstr .= " Consider raising pcre.backtrack_limit!";
+            }
+            if ($preg_error == PREG_RECURSION_LIMIT_ERROR) {
+                $errstr .= " Consider raising pcre.recursion_limit!";
+            }
+
+            $error = array_merge(array('code' => 620, 'line' => __LINE__, 'file' => __FILE__), $error);
+
+            if (!empty($error['message'])) {
+                $error['message'] .= ' ' . $errstr;
+            }
+            else {
+                $error['message'] = $errstr;
+            }
+
+            rcube::raise_error($error, true, $terminate);
+
+            return true;
+        }
+
+        return false;
+    }
+
+    /**
+     * Generate a temporary file path in the Roundcube temp directory
+     *
+     * @param string $file_name String identifier for the type of temp file
+     * @param bool   $unique    Generate unique file names based on $file_name
+     * @param bool   $create    Create the temp file or not
+     *
+     * @return string temporary file path
+     */
+    public static function temp_filename($file_name, $unique = true, $create = true)
+    {
+        $temp_dir = rcube::get_instance()->config->get('temp_dir');
+
+        // Fall back to system temp dir if configured dir is not writable
+        if (!is_writable($temp_dir)) {
+            $temp_dir = sys_get_temp_dir();
+        }
+
+        // On Windows tempnam() uses only the first three characters of prefix so use uniqid() and manually add the prefix
+        // Full prefix is required for garbage collection to recognise the file
+        $temp_file = $unique ? str_replace('.', '', uniqid($file_name, true)) : $file_name;
+        $temp_path = unslashify($temp_dir) . '/' . RCUBE_TEMP_FILE_PREFIX . $temp_file;
+
+        // Sanity check for unique file name
+        if ($unique && file_exists($temp_path)) {
+            return self::temp_filename($file_name, $unique, $create);
+        }
+
+        // Create the file to prevent possible race condition like tempnam() does
+        if ($create) {
+            touch($temp_path);
+        }
+
+        return $temp_path;
     }
 }

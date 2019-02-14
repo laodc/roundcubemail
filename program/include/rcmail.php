@@ -100,6 +100,9 @@ class rcmail extends rcube
         $required_plugins = array('filesystem_attachments', 'jqueryui');
         $this->plugins->load_plugins($plugins, $required_plugins);
 
+        // Remember default skin, before it's replaced by user prefs
+        $this->default_skin = $this->config->get('skin');
+
         // start session
         $this->session_init();
 
@@ -455,7 +458,8 @@ class rcmail extends rcube
 
         // add some basic labels to client
         $this->output->add_label('loading', 'servererror', 'connerror', 'requesttimedout',
-            'refreshing', 'windowopenerror', 'uploadingmany', 'close', 'save', 'cancel', 'alerttitle', 'confirmationtitle', 'delete', 'continue', 'ok');
+            'refreshing', 'windowopenerror', 'uploadingmany', 'uploading', 'close', 'save', 'cancel',
+            'alerttitle', 'confirmationtitle', 'delete', 'continue', 'ok');
 
         return $this->output;
     }
@@ -484,11 +488,6 @@ class rcmail extends rcube
         // set initial session vars
         if (!$_SESSION['user_id']) {
             $_SESSION['temp'] = true;
-        }
-
-        // restore skin selection after logout
-        if ($_SESSION['temp'] && !empty($_SESSION['skin'])) {
-            $this->config->set('skin', $_SESSION['skin']);
         }
     }
 
@@ -606,8 +605,10 @@ class rcmail extends rcube
 
         // Here we need IDNA ASCII
         // Only rcube_contacts class is using domain names in Unicode
-        $host     = rcube_utils::idn_to_ascii($host);
-        $username = rcube_utils::idn_to_ascii($username);
+        $host = rcube_utils::idn_to_ascii($host);
+        if (strpos($username, '@')) {
+            $username = rcube_utils::idn_to_ascii($username);
+        }
 
         // user already registered -> overwrite username
         if ($user = rcube_user::query($username, $host)) {
@@ -772,8 +773,12 @@ class rcmail extends rcube
         $this->plugins->exec_hook('session_destroy');
 
         $this->session->kill();
-        $_SESSION = array('language' => $this->user->language, 'temp' => true, 'skin' => $this->config->get('skin'));
+        $_SESSION = array('language' => $this->user->language, 'temp' => true);
         $this->user->reset();
+
+        if ($this->config->get('skin') != $this->default_skin && method_exists($this->output, 'set_skin')) {
+            $this->output->set_skin($this->default_skin);
+        }
     }
 
     /**
@@ -888,14 +893,17 @@ class rcmail extends rcube
 
         // write performance stats to logs/console
         if ($this->config->get('devel_mode') || $this->config->get('performance_stats')) {
+            // we have to disable per_user_logging to make sure stats end up in the main console log
+            $this->config->set('per_user_logging', false);
+
             // make sure logged numbers use unified format
             setlocale(LC_NUMERIC, 'en_US.utf8', 'en_US.UTF-8', 'en_US', 'C');
 
             if (function_exists('memory_get_usage')) {
-                $mem = $this->show_bytes(memory_get_usage());
+                $mem = round(memory_get_usage() / 1024 /1024, 1);
             }
             if (function_exists('memory_get_peak_usage')) {
-                $mem .= '/'.$this->show_bytes(memory_get_peak_usage());
+                $mem .= '/'. round(memory_get_peak_usage() / 1024 / 1024, 1);
             }
 
             $log = $this->task . ($this->action ? '/'.$this->action : '') . ($mem ? " [$mem]" : '');
@@ -920,12 +928,6 @@ class rcmail extends rcube
         if (!$this->check_request($mode)) {
             $error = array('code' => 403, 'message' => "Request security check failed");
             self::raise_error($error, false, true);
-        }
-
-        // check referer if configured
-        if ($this->config->get('referer_check') && !rcube_utils::check_referer()) {
-            $error = array('code' => 403, 'message' => "Referer check failed");
-            self::raise_error($error, true, true);
         }
     }
 
@@ -1807,7 +1809,7 @@ class rcmail extends rcube
                 $quota_result['percent'] = min(100, round(($quota['used']/max(1,$quota['total']))*100));
             }
 
-            $title = sprintf('%s / %s (%.0f%%)',
+            $title = $this->gettext('quota') . ': ' . sprintf('%s / %s (%.0f%%)',
                 $this->show_bytes($quota['used'] * 1024),
                 $this->show_bytes($quota['total'] * 1024),
                 $quota_result['percent']
@@ -1932,6 +1934,22 @@ class rcmail extends rcube
     }
 
     /**
+     * Displays an error message on storage fatal errors
+     */
+    public function storage_fatal_error()
+    {
+        $err_code = $this->storage->get_error_code();
+        switch ($err_code) {
+        // Not all are really fatal, but these should catch
+        // connection/authentication errors the best we can
+        case rcube_imap_generic::ERROR_NO:
+        case rcube_imap_generic::ERROR_BAD:
+        case rcube_imap_generic::ERROR_BYE:
+            $this->display_server_error();
+        }
+    }
+
+    /**
      * Output HTML editor scripts
      *
      * @param string $mode Editor mode
@@ -1963,6 +1981,7 @@ class rcmail extends rcube
 
         $lang_codes = array($_SESSION['language']);
         $assets_dir = $this->config->get('assets_dir') ?: INSTALL_PATH;
+        $skin_path  = $this->output->get_skin_path();
 
         if ($pos = strpos($_SESSION['language'], '_')) {
             $lang_codes[] = substr($_SESSION['language'], 0, $pos);
@@ -1982,94 +2001,41 @@ class rcmail extends rcube
         $config = array(
             'mode'       => $mode,
             'lang'       => $lang,
-            'skin_path'  => $this->output->get_skin_path(),
+            'skin_path'  => $skin_path,
             'spellcheck' => $spellcheck, // deprecated
             'spelldict'  => $spelldict,
+            'content_css'      => 'program/resources/tinymce/content.css',
             'disabled_plugins' => $hook['disabled_plugins'],
             'disabled_buttons' => $hook['disabled_buttons'],
             'extra_plugins'    => $hook['extra_plugins'],
             'extra_buttons'    => $hook['extra_buttons'],
         );
 
+        if ($path = $this->config->get('editor_css_location')) {
+            $config['content_css'] = $skin_path . $path;
+        }
+
         $this->output->add_label('selectimage', 'addimage', 'selectmedia', 'addmedia');
         $this->output->set_env('editor_config', $config);
-        $this->output->include_css('program/resources/tinymce/browser.css');
+
+        if ($path = $this->config->get('media_browser_css_location', 'program/resources/tinymce/browser.css')) {
+            if ($path != 'none') {
+                $this->output->include_css($path);
+            }
+        }
+
         $this->output->include_script('tinymce/tinymce.min.js');
         $this->output->include_script('editor.js');
     }
 
     /**
      * File upload progress handler.
+     *
+     * @deprecated We're using HTML5 upload progress
      */
     public function upload_progress()
     {
-        $params = array(
-            'action' => $this->action,
-            'name'   => rcube_utils::get_input_value('_progress', rcube_utils::INPUT_GET),
-        );
-
-        if (function_exists('uploadprogress_get_info')) {
-            $status = uploadprogress_get_info($params['name']);
-
-            if (!empty($status)) {
-                $params['current'] = $status['bytes_uploaded'];
-                $params['total']   = $status['bytes_total'];
-            }
-        }
-
-        if (!isset($status) && filter_var(ini_get('apc.rfc1867'), FILTER_VALIDATE_BOOLEAN)
-            && ini_get('apc.rfc1867_name')
-        ) {
-            $prefix = ini_get('apc.rfc1867_prefix');
-            $status = apc_fetch($prefix . $params['name']);
-
-            if (!empty($status)) {
-                $params['current'] = $status['current'];
-                $params['total']   = $status['total'];
-            }
-        }
-
-        if (!isset($status) && filter_var(ini_get('session.upload_progress.enabled'), FILTER_VALIDATE_BOOLEAN)
-            && ini_get('session.upload_progress.name')
-        ) {
-            $key = ini_get('session.upload_progress.prefix') . $params['name'];
-
-            $params['total']   = $_SESSION[$key]['content_length'];
-            $params['current'] = $_SESSION[$key]['bytes_processed'];
-        }
-
-        if (!empty($params['total'])) {
-            $total = $this->show_bytes($params['total'], $unit);
-            switch ($unit) {
-            case 'GB':
-                $gb      = $params['current']/1073741824;
-                $current = sprintf($gb >= 10 ? "%d" : "%.1f", $gb);
-                break;
-            case 'MB':
-                $mb      = $params['current']/1048576;
-                $current = sprintf($mb >= 10 ? "%d" : "%.1f", $mb);
-                break;
-            case 'KB':
-                $current = round($params['current']/1024);
-                break;
-            case 'B':
-            default:
-                $current = $params['current'];
-                break;
-            }
-
-            $params['percent'] = round($params['current']/$params['total']*100);
-            $params['text']    = $this->gettext(array(
-                'name' => 'uploadprogress',
-                'vars' => array(
-                    'percent' => $params['percent'] . '%',
-                    'current' => $current,
-                    'total'   => $total
-                )
-            ));
-        }
-
-        $this->output->command('upload_progress_update', $params);
+        // NOOP
         $this->output->send();
     }
 
@@ -2082,24 +2048,6 @@ class rcmail extends rcube
      */
     public function upload_init($max_size = null)
     {
-        // Enable upload progress bar
-        if ($seconds = $this->config->get('upload_progress')) {
-            if (function_exists('uploadprogress_get_info')) {
-                $field_name = 'UPLOAD_IDENTIFIER';
-            }
-            if (!$field_name && filter_var(ini_get('apc.rfc1867'), FILTER_VALIDATE_BOOLEAN)) {
-                $field_name = ini_get('apc.rfc1867_name');
-            }
-            if (!$field_name && filter_var(ini_get('session.upload_progress.enabled'), FILTER_VALIDATE_BOOLEAN)) {
-                $field_name = ini_get('session.upload_progress.name');
-            }
-
-            if ($field_name) {
-                $this->output->set_env('upload_progress_name', $field_name);
-                $this->output->set_env('upload_progress_time', (int) $seconds);
-            }
-        }
-
         // find max filesize value
         $max_filesize = rcube_utils::max_upload_size();
         if ($max_size && $max_size < $max_filesize) {
@@ -2116,6 +2064,8 @@ class rcmail extends rcube
             $this->output->set_env('filecounterror', $this->gettext(array(
                 'name' => 'filecounterror', 'vars' => array('count' => $max_filecount))));
         }
+
+        $this->output->add_label('uploadprogress', 'GB', 'MB', 'KB', 'B');
 
         return $max_filesize_txt;
     }
@@ -2214,17 +2164,16 @@ class rcmail extends rcube
 
             // generate image thumbnail for file browser in HTML editor
             if (!empty($_GET['_thumbnail'])) {
-                $temp_dir       = $this->config->get('temp_dir');
                 $thumbnail_size = 80;
                 $mimetype       = $file['mimetype'];
                 $file_ident     = $file['id'] . ':' . $file['mimetype'] . ':' . $file['size'];
-                $cache_basename = $temp_dir . '/' . md5($file_ident . ':' . $this->user->ID . ':' . $thumbnail_size);
-                $cache_file     = $cache_basename . '.thumb';
+                $thumb_name     = 'thumb' . md5($file_ident . ':' . $this->user->ID . ':' . $thumbnail_size);
+                $cache_file     = rcube_utils::temp_filename($thumb_name, false, false);
 
                 // render thumbnail image if not done yet
                 if (!is_file($cache_file)) {
                     if (!$file['path']) {
-                        $orig_name = $filename = $cache_basename . '.tmp';
+                        $orig_name = $filename = $cache_file . '.tmp';
                         file_put_contents($orig_name, $file['data']);
                     }
                     else {
@@ -2402,16 +2351,17 @@ class rcmail extends rcube
      * @param string $uids           UID value to decode
      * @param string $mbox           Default mailbox value (if not encoded in UIDs)
      * @param bool   $is_multifolder Will be set to True if multi-folder request
+     * @param int    $mode           Request mode. Default: rcube_utils::INPUT_GPC.
      *
      * @return array  List of message UIDs per folder
      */
-    public static function get_uids($uids = null, $mbox = null, &$is_multifolder = false)
+    public static function get_uids($uids = null, $mbox = null, &$is_multifolder = false, $mode = null)
     {
         // message UID (or comma-separated list of IDs) is provided in
         // the form of <ID>-<MBOX>[,<ID>-<MBOX>]*
 
-        $_uid  = $uids ?: rcube_utils::get_input_value('_uid', rcube_utils::INPUT_GPC);
-        $_mbox = $mbox ?: (string) rcube_utils::get_input_value('_mbox', rcube_utils::INPUT_GPC);
+        $_uid  = $uids ?: rcube_utils::get_input_value('_uid', $mode ?: rcube_utils::INPUT_GPC);
+        $_mbox = $mbox ?: (string) rcube_utils::get_input_value('_mbox', $mode ?: rcube_utils::INPUT_GPC);
 
         // already a hash array
         if (is_array($_uid) && !isset($_uid[0])) {
@@ -2430,8 +2380,9 @@ class rcmail extends rcube
             }
         }
         else {
-            if (is_string($_uid))
+            if (is_string($_uid)) {
                 $_uid = explode(',', $_uid);
+            }
 
             // create a per-folder UIDs array
             foreach ((array)$_uid as $uid) {
@@ -2446,7 +2397,7 @@ class rcmail extends rcube
                 if ($uid == '*') {
                     $result[$mbox] = $uid;
                 }
-                else {
+                else if (preg_match('/^[0-9:.]+$/', $uid)) {
                     $result[$mbox][] = $uid;
                 }
             }

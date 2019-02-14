@@ -24,6 +24,8 @@ class enigma_driver_gnupg extends enigma_driver
     protected $homedir;
     protected $user;
     protected $last_sig_algorithm;
+    protected $debug    = false;
+    protected $db_files = array('pubring.gpg', 'secring.gpg', 'pubring.kbx');
 
 
     function __construct($user)
@@ -40,7 +42,7 @@ class enigma_driver_gnupg extends enigma_driver
      */
     function init()
     {
-        $homedir = $this->rc->config->get('enigma_pgp_homedir', INSTALL_PATH . 'plugins/enigma/home');
+        $homedir = $this->rc->config->get('enigma_pgp_homedir');
         $debug   = $this->rc->config->get('enigma_debug');
         $binary  = $this->rc->config->get('enigma_pgp_binary');
         $agent   = $this->rc->config->get('enigma_pgp_agent');
@@ -77,6 +79,7 @@ class enigma_driver_gnupg extends enigma_driver
                 "Unable to write to keys directory: $homedir");
         }
 
+        $this->debug   = $debug;
         $this->homedir = $homedir;
 
         $options = array('homedir' => $this->homedir);
@@ -104,6 +107,8 @@ class enigma_driver_gnupg extends enigma_driver
         catch (Exception $e) {
             return $this->get_error_from_exception($e);
         }
+
+        $this->db_sync();
     }
 
     /**
@@ -160,6 +165,16 @@ class enigma_driver_gnupg extends enigma_driver
 
             if (!empty($result['signatures'])) {
                 $signature = $this->parse_signature($result['signatures'][0]);
+            }
+
+            // EFAIL vulnerability mitigation (#6289)
+            // Handle MDC warning as an exception, this is the default for gpg 2.3.
+            if (method_exists($this->gpg, 'getWarnings')) {
+                foreach ($this->gpg->getWarnings() as $warning_msg) {
+                    if (strpos($warning_msg, 'not integrity protected') !== false) {
+                        return new enigma_error(enigma_error::NOMDC, ucfirst($warning_msg));
+                    }
+                }
             }
 
             return $result['data'];
@@ -231,10 +246,16 @@ class enigma_driver_gnupg extends enigma_driver
                 $this->gpg->addPassphrase($keyid, $pass);
             }
 
-            if ($isfile)
-                return $this->gpg->importKeyFile($content);
-            else
-                return $this->gpg->importKey($content);
+            if ($isfile) {
+                $result = $this->gpg->importKeyFile($content);
+            }
+            else {
+                $result = $this->gpg->importKey($content);
+            }
+
+            $this->db_save();
+
+            return $result;
         }
         catch (Exception $e) {
             return $this->get_error_from_exception($e);
@@ -367,16 +388,15 @@ class enigma_driver_gnupg extends enigma_driver
             }
             // need to delete private key first
             else if ($code == enigma_error::DELKEY) {
-                $key = $this->get_key($keyid);
-                for ($i = count($key->subkeys) - 1; $i >= 0; $i--) {
-                    $type = ($key->subkeys[$i]->usage & enigma_key::CAN_ENCRYPT) ? 'priv' : 'pub';
-                    $result = $this->{'delete_' . $type . 'key'}($key->subkeys[$i]->id);
-                    if ($result !== true) {
-                        return $result;
-                    }
+                $result = $this->delete_privkey($keyid);
+
+                if ($result === true) {
+                    $result = $this->delete_pubkey($keyid);
                 }
             }
         }
+
+        $this->db_save();
 
         return $result;
     }
@@ -527,6 +547,202 @@ class enigma_driver_gnupg extends enigma_driver
         $ekey->id = $ekey->subkeys[0]->id;
 
         return $ekey;
+    }
+
+    /**
+     * Syncronize keys database on multi-host setups
+     */
+    protected function db_sync()
+    {
+        if (!$this->rc->config->get('enigma_multihost')) {
+            return;
+        }
+
+        $db    = $this->rc->get_dbh();
+        $table = $db->table_name('filestore', true);
+        $files = array();
+
+        $result = $db->query(
+            "SELECT `file_id`, `filename`, `mtime` FROM $table WHERE `user_id` = ? AND `context` = ?",
+            $this->rc->user->ID, 'enigma');
+
+        while ($record = $db->fetch_assoc($result)) {
+            $file  = $this->homedir . '/' . $record['filename'];
+            $mtime = @filemtime($file);
+            $files[] = $record['filename'];
+
+            if ($mtime < $record['mtime']) {
+                $data_result = $db->query("SELECT `data`, `mtime` FROM $table"
+                    . " WHERE `file_id` = ?", $record['file_id']);
+
+                $data = $db->fetch_assoc($data_result);
+                $data = $data ? base64_decode($data['data']) : null;
+
+                if ($data === null || $data === false) {
+                    rcube::raise_error(array(
+                            'code' => 605, 'line' => __LINE__, 'file' => __FILE__,
+                            'message' => "Enigma: Failed to sync $file ({$record['file_id']}). Decode error."
+                        ), true, false);
+
+                    continue;
+                }
+
+                $tmpfile = $file . '.tmp';
+
+                if (file_put_contents($tmpfile, $data, LOCK_EX) === strlen($data)) {
+                    rename($tmpfile, $file);
+                    touch($file, $data_record['mtime']);
+
+                    if ($this->debug) {
+                        $this->debug("SYNC: Fetched file: $file");
+                    }
+                }
+                else {
+                    // error
+                    @unlink($tmpfile);
+
+                    rcube::raise_error(array(
+                            'code' => 605, 'line' => __LINE__, 'file' => __FILE__,
+                            'message' => "Enigma: Failed to sync $file."
+                        ), true, false);
+                }
+            }
+        }
+
+        // Remove files not in database
+        if (!$db->is_error($result)) {
+            foreach (array_diff($this->db_files_list(), $files) as $file) {
+                $file = $this->homedir . '/' . $file;
+
+                if (unlink($file)) {
+                    if ($this->debug) {
+                        $this->debug("SYNC: Removed file: $file");
+                    }
+                }
+            }
+        }
+
+        // No records found, do initial sync if already have the keyring
+        if (!$db->is_error($result) && empty($file)) {
+            $this->db_save(true);
+        }
+    }
+
+    /**
+     * Save keys database for multi-host setups
+     */
+    protected function db_save($is_empty = false)
+    {
+        if (!$this->rc->config->get('enigma_multihost')) {
+            return true;
+        }
+
+        $db      = $this->rc->get_dbh();
+        $table   = $db->table_name('filestore', true);
+        $records = array();
+
+        if (!$is_empty) {
+            $result = $db->query(
+                "SELECT `file_id`, `filename`, `mtime` FROM $table WHERE `user_id` = ? AND `context` = ?",
+                $this->rc->user->ID, 'enigma'
+            );
+
+            while ($record = $db->fetch_assoc($result)) {
+                $records[$record['filename']] = $record;
+            }
+        }
+
+        foreach ($this->db_files_list() as $filename) {
+            $file  = $this->homedir . '/' . $filename;
+            $mtime = @filemtime($file);
+
+            $existing = $records[$filename];
+            unset($records[$filename]);
+
+            if ($mtime && (empty($existing) || $mtime > $existing['mtime'])) {
+                $data     = file_get_contents($file);
+                $data     = base64_encode($data);
+                $datasize = strlen($data);
+
+                if (empty($maxsize)) {
+                    $maxsize = min($db->get_variable('max_allowed_packet', 1048500), 4*1024*1024) - 2000;
+                }
+
+                if ($datasize > $maxsize) {
+                    rcube::raise_error(array(
+                            'code' => 605, 'line' => __LINE__, 'file' => __FILE__,
+                            'message' => "Enigma: Failed to save $file. Size exceeds max_allowed_packet."
+                        ), true, false);
+
+                    continue;
+                }
+
+                if (empty($existing)) {
+                    $result = $db->query(
+                        "INSERT INTO $table (`user_id`, `context`, `filename`, `mtime`, `data`)"
+                        . " VALUES(?, 'enigma', ?, ?, ?)",
+                        $this->rc->user->ID, $filename, $mtime, $data);
+                }
+                else {
+                    $result = $db->query(
+                        "UPDATE $table SET `mtime` = ?, `data` = ? WHERE `file_id` = ?",
+                        $mtime, $data, $existing['file_id']);
+                }
+
+                if ($db->is_error($result)) {
+                    rcube::raise_error(array(
+                            'code' => 605, 'line' => __LINE__, 'file' => __FILE__,
+                            'message' => "Enigma: Failed to save $file into database."
+                        ), true, false);
+
+                    break;
+                }
+
+                if ($this->debug) {
+                    $this->debug("SYNC: Pushed file: $file");
+                }
+            }
+        }
+
+        // Delete removed files from database
+        foreach (array_keys($records) as $filename) {
+            $file   = $this->homedir . '/' . $filename;
+            $result = $db->query("DELETE FROM $table WHERE `user_id` = ? AND `context` = ? AND `filename` = ?",
+                $this->rc->user->ID, 'enigma', $filename);
+
+            if ($db->is_error($result)) {
+                rcube::raise_error(array(
+                        'code' => 605, 'line' => __LINE__, 'file' => __FILE__,
+                        'message' => "Enigma: Failed to delete $file from database."
+                    ), true, false);
+
+                break;
+            }
+
+            if ($this->debug) {
+                $this->debug("SYNC: Removed file: $file");
+            }
+        }
+    }
+
+    /**
+     * Returns list of homedir files to backup
+     */
+    protected function db_files_list()
+    {
+        $files = array();
+
+        foreach ($this->db_files as $file) {
+            if (file_exists($this->homedir . '/' . $file)) {
+                $files[] = $file;
+            }
+        }
+
+        foreach (glob($this->homedir . '/private-keys-v1.d/*.key') as $file) {
+            $files[] = ltrim(substr($file, strlen($this->homedir)), '/');
+        }
+
+        return $files;
     }
 
     /**

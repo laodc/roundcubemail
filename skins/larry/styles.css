@@ -2071,6 +2071,18 @@ ul.proplist.simplelist li {
 	background-position: center -2065px;
 }
 
+.toolbar a.button.rotate {
+	background-position: center -2148px;
+}
+
+.toolbar a.button.zoomin {
+	background-position: center -2190px;
+}
+
+.toolbar a.button.zoomout {
+	background-position: center -2230px;
+}
+
 a.menuselector {
 	display: inline-block;
 	border: 1px solid #ababab;
@@ -2414,6 +2426,8 @@ ul.toolbarmenu li span.copy {
 	border: 0;
 	cursor: default;
 	position: relative;
+	overflow: hidden;
+	text-overflow: ellipsis;
 }
 
 #rcmKSearchpane ul li i.icon {
@@ -3048,6 +3062,14 @@ ul.toolbarmenu li span.copy {
 }
 
 /** Common TinyMCE fixes **/
+.mce-btn:not(.mce-active) {
+	background: transparent !important;
+}
+
+.mce-btn:not(.mce-active):hover {
+	background: white !important;
+}
+
 .mce-btn-small .mce-ico {
 	display: inline; /* for old Firefox */
 }
@@ -3059,6 +3081,10 @@ ul.toolbarmenu li span.copy {
 
 _:not(), _:-moz-handler-blocked, .mozilla .mce-btn-small i {
 	line-height: 20px !important;
+}
+
+.mce-top-part::before {
+	box-shadow: none !important;
 }
 
 .mce-textbox {

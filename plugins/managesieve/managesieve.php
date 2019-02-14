@@ -38,6 +38,13 @@ class managesieve extends rcube_plugin
     {
         $this->rc = rcube::get_instance();
 
+        $this->load_config();
+
+        $allowed_hosts = $this->rc->config->get('managesieve_allowed_hosts');
+        if (!empty($allowed_hosts) && !in_array($_SESSION['storage_host'], (array) $allowed_hosts)) {
+            return;
+        }
+
         // register actions
         $this->register_action('plugin.managesieve', array($this, 'managesieve_actions'));
         $this->register_action('plugin.managesieve-action', array($this, 'managesieve_actions'));
@@ -100,10 +107,8 @@ class managesieve extends rcube_plugin
      */
     function settings_actions($args)
     {
-        $this->load_config();
-
         $vacation_mode = (int) $this->rc->config->get('managesieve_vacation');
-        $forward_mode = (int) $this->rc->config->get('managesieve_forward');
+        $forward_mode  = (int) $this->rc->config->get('managesieve_forward');
 
         // register Filters action
         if ($vacation_mode != 2 && $forward_mode != 2) {
@@ -202,9 +207,10 @@ class managesieve extends rcube_plugin
      */
     function managesieve_actions()
     {
+        $uids = rcmail::get_uids(null, null, $multifolder, rcube_utils::INPUT_POST);
+
         // handle fetching email headers for the new filter form
-        if ($uid = rcube_utils::get_input_value('_uid', rcube_utils::INPUT_POST)) {
-            $uids    = rcmail::get_uids();
+        if (!empty($uids)) {
             $mailbox = key($uids);
             $message = new rcube_message($uids[$mailbox][0], $mailbox);
             $headers = $this->parse_headers($message->headers);
@@ -263,14 +269,12 @@ class managesieve extends rcube_plugin
     public function get_engine($type = null)
     {
         if (!$this->engine) {
-            $this->load_config();
-
             // Add include path for internal classes
             $include_path = $this->home . '/lib' . PATH_SEPARATOR;
             $include_path .= ini_get('include_path');
             set_include_path($include_path);
 
-            $class_name = 'rcube_sieve_' . ($type ?: 'engine');
+            $class_name   = 'rcube_sieve_' . ($type ?: 'engine');
             $this->engine = new $class_name($this);
         }
 

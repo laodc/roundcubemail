@@ -53,7 +53,7 @@
 	</div>
 	<h2 id="aria-label-filterframe" class="voice"><roundcube:label name="managesieve.arialabelfilterform" /></h2>
 	<div class="iframe-wrapper">
-		<roundcube:object name="filterframe" id="filter-box" src="/watermark.html" title="managesieve.arialabelfilterform"
+		<roundcube:object name="contentframe" id="filter-box" src="env:blankpage" title="managesieve.arialabelfilterform"
 			aria-labelledby="aria-label-filterform" />
 	</div>
 </div>
@@ -63,7 +63,7 @@
 	<ul class="toolbarmenu listing" id="filtersetmenu-menu" role="menu" aria-labelledby="aria-label-setactions">
 		<roundcube:button type="link-menuitem" command="plugin.managesieve-setadd" label="managesieve.filtersetadd" class="create" classAct="create active" />
 		<roundcube:if condition="env:raw_sieve_editor != false" />
-			<roundcube:button type="link-menuitem" command="plugin.managesieve-seteditraw" label="managesieve.filterseteditraw" class="edit" classAct="edit active" data-hidden="small" />
+			<roundcube:button type="link-menuitem" command="plugin.managesieve-seteditraw" label="managesieve.filterseteditraw" class="edit" classAct="edit active" />
 		<roundcube:endif />
 		<roundcube:button type="link-menuitem" command="plugin.managesieve-setact" label="managesieve.filtersetswitch" class="status" classAct="status active" />
 		<roundcube:button type="link-menuitem" command="plugin.managesieve-setdel" label="managesieve.filtersetdel" class="delete" classAct="delete active" />

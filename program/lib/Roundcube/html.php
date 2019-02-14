@@ -33,7 +33,7 @@ class html
     public static $lc_tags = true;
     public static $common_attrib = array('id','class','style','title','align','unselectable','tabindex','role');
     public static $containers    = array('iframe','div','span','p','h1','h2','h3','ul','form','textarea','table','thead','tbody','tr','th','td','style','script','a');
-    public static $bool_attrib   = array('checked','multiple','disabled','selected','autofocus','readonly');
+    public static $bool_attrib   = array('checked','multiple','disabled','selected','autofocus','readonly','required');
 
 
     /**
@@ -375,16 +375,7 @@ class html
      */
     public static function quote($str)
     {
-        static $flags;
-
-        if (!$flags) {
-            $flags = ENT_COMPAT;
-            if (defined('ENT_SUBSTITUTE')) {
-                $flags |= ENT_SUBSTITUTE;
-            }
-        }
-
-        return @htmlspecialchars($str, $flags, RCUBE_CHARSET);
+        return @htmlspecialchars($str, ENT_COMPAT | ENT_SUBSTITUTE, RCUBE_CHARSET);
     }
 }
 
@@ -403,7 +394,7 @@ class html_inputfield extends html
         'type','name','value','size','tabindex','autocapitalize','required',
         'autocomplete','checked','onchange','onclick','disabled','readonly',
         'spellcheck','results','maxlength','src','multiple','accept',
-        'placeholder','autofocus','pattern',
+        'placeholder','autofocus','pattern','oninput'
     );
 
     /**

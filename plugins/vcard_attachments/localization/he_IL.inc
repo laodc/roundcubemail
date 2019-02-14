@@ -18,5 +18,7 @@
 $labels['addvcardmsg'] = 'הוספת כרטיס ביקור בפורמט vCard לספר הכתובות';
 $labels['vcardsavefailed'] = 'לא ניתן לשמור את כרטיס הביקור  vCard';
 $labels['attachvcard'] = 'צרפ/י קובץ חתימה (vCard)';
+$labels['vcardattached'] = 'צורף קובץ vCard';
 $labels['vcard'] = 'קובץ חתימה (vCard)';
+$labels['forwardvcard'] = 'העברה של כרטיס ביקור';
 ?>

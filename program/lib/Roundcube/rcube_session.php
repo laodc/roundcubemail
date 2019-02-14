@@ -102,6 +102,11 @@ abstract class rcube_session
      */
     public function register_session_handler()
     {
+        if (session_id()) {
+            // Session already exists, skip
+            return;
+        }
+
         ini_set('session.serialize_handler', 'php');
 
         // set custom functions for PHP session management
@@ -306,7 +311,7 @@ abstract class rcube_session
             $cache = null;
         }
         // use internal data for fast requests (up to 0.5 sec.)
-        else if ($key == $this->key && (!$this->vars || $ts - $this->start < 0.5)) {
+        else if ($key == $this->key && (!$this->vars || microtime(true) - $this->start < 0.5)) {
             $cache = $this->vars;
         }
         else { // else read data again
@@ -468,7 +473,7 @@ abstract class rcube_session
      * Unserialize session data
      * http://www.php.net/manual/en/function.session-decode.php#56106
      */
-    protected function unserialize($str)
+    public static function unserialize($str)
     {
         $str    = (string)$str;
         $endptr = strlen($str);

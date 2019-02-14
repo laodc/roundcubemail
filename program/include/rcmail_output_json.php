@@ -37,6 +37,23 @@ class rcmail_output_json extends rcmail_output
 
 
     /**
+     * Object constructor
+     */
+    public function __construct($task = null, $framed = false)
+    {
+        parent::__construct();
+
+        if (!empty($_SESSION['skin_config'])) {
+            foreach ($_SESSION['skin_config'] as $key => $value) {
+                $this->config->set($key, $value, true);
+            }
+
+            $value = array_merge((array) $this->config->get('dont_override'), array_keys($_SESSION['skin_config']));
+            $this->config->set('dont_override', $value, true);
+        }
+    }
+
+    /**
      * Issue command to set page title
      *
      * @param string $title New page title
@@ -232,7 +249,7 @@ class rcmail_output_json extends rcmail_output
         $response = $hook['response'];
         unset($hook['response']);
 
-        echo self::json_serialize($response, $this->devel_mode);
+        echo self::json_serialize($response, $this->devel_mode, false);
     }
 
     /**
@@ -245,7 +262,7 @@ class rcmail_output_json extends rcmail_output
         foreach ($this->commands as $i => $args) {
             $method = array_shift($args);
             foreach ($args as $i => $arg) {
-                $args[$i] = self::json_serialize($arg, $this->devel_mode);
+                $args[$i] = self::json_serialize($arg, $this->devel_mode, false);
             }
 
             $out .= sprintf(

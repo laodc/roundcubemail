@@ -119,15 +119,30 @@ function fetch_from_source($package, $useCache = true, &$filetype = null)
       die("ERROR: Required program 'wget' or 'curl' not found\n");
     }
 
-    echo "Fetching {$package['url']}\n";
+    $url = str_replace('$v', $package['version'], $package['url']);
+
+    echo "Fetching $url\n";
 
     if ($CURL)
-        exec(sprintf('%s -s %s -o %s', $CURL, escapeshellarg($package['url']), $cache_file), $out, $retval);
+        exec(sprintf('%s -L -s %s -o %s', $CURL, escapeshellarg($url), $cache_file), $out, $retval);
     else
-        exec(sprintf('%s -q %s -O %s', $WGET, escapeshellarg($package['url']), $cache_file), $out, $retval);
+        exec(sprintf('%s -q %s -O %s', $WGET, escapeshellarg($url), $cache_file), $out, $retval);
+
+    // Try Github API as a fallback (#6248)
+    if ($retval !== 0 && $package['api_url']) {
+      $url    = str_replace('$v', $package['version'], $package['api_url']);
+      $header = 'Accept:application/vnd.github.v3.raw';
+
+      echo "Fetching failed. Using Github API on $url\n";
+
+      if ($CURL)
+        exec(sprintf('%s -L -H %s -s %s -o %s', $CURL, escapeshellarg($header), escapeshellarg($url), $cache_file), $out, $retval);
+      else
+        exec(sprintf('%s --header %s -q %s -O %s', $WGET, escapeshellarg($header), escapeshellarg($url), $cache_file), $out, $retval);
+    }
 
     if ($retval !== 0) {
-      die("ERROR: Failed to download source file from " . $package['url'] . "\n");
+      die("ERROR: Failed to download source file from " . $url . "\n");
     }
   }
 
@@ -167,7 +182,7 @@ function compose_destfile($package, $srcfile)
   $header = sprintf("/**\n * %s - v%s\n *\n", $package['name'], $package['version']);
 
   if (!empty($package['source'])) {
-    $header .= " * @source " . $package['source'] . "\n";
+    $header .= " * @source " . str_replace('$v', $package['version'], $package['source']) . "\n";
     $header .= " *\n";
   }
 
@@ -209,7 +224,7 @@ function extract_zipfile($package, $srcfile)
 
   $destdir = INSTALL_PATH . $package['dest'];
   if (!is_dir($destdir)) {
-    mkdir($destdir, 0774, true);
+    mkdir($destdir, 0775, true);
   }
 
   if (!is_writeable($destdir)) {
@@ -232,20 +247,22 @@ function extract_zipfile($package, $srcfile)
     if (!is_dir($extract)) {
       mkdir($extract, 0774, true);
     }
-    exec(sprintf('%s -o %s -d %s', $UNZIP, escapeshellarg($srcfile), $extract), $out, $retval);
+
+    $zip_command = '%s -' . ($package['flat'] ? 'j' : 'o') . ' %s -d %s';
+    exec(sprintf($zip_command, $UNZIP, escapeshellarg($srcfile), $extract), $out, $retval);
 
     // get the root folder of the extracted package
     $extract_tree = glob("$extract/*", GLOB_ONLYDIR);
-    $sourcedir    = $extract_tree[0];
+    $sourcedir    = count($extract_tree) ? $extract_tree[0] : $extract;
 
     foreach ($package['map'] as $src => $dest) {
-      echo "Installing files $sourcedir/$src into $destdir/$dest\n";
+      echo "Installing $sourcedir/$src into $destdir/$dest\n";
 
       // make sure the destination's parent directory exists
       if (strpos($dest, '/') !== false) {
         $parentdir = dirname($destdir . '/' . $dest);
         if (!is_dir($parentdir)) {
-          mkdir($parentdir, 0774, true);
+          mkdir($parentdir, 0775, true);
         }
       }
 

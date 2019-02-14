@@ -117,7 +117,6 @@ $OUTPUT->add_handlers(array(
     'savedsearchlist'     => 'rcmail_savedsearch_list',
     'addresslist'         => 'rcmail_contacts_list',
     'addresslisttitle'    => 'rcmail_contacts_list_title',
-    'addressframe'        => 'rcmail_contact_frame',
     'recordscountdisplay' => 'rcmail_rowcount_display',
     'searchform'          => array($OUTPUT, 'search_form')
 ));
@@ -135,8 +134,11 @@ $RCMAIL->register_action_map(array(
 ));
 
 // Disable qr-code if php-gd or Endroid's QrCode is not installed
-$OUTPUT->set_env('qrcode', function_exists('imagecreate') && class_exists('Endroid\QrCode\QrCode'));
-$OUTPUT->add_label('qrcode');
+if (!$OUTPUT->ajax_call) {
+    $OUTPUT->set_env('qrcode', function_exists('imagecreate') && class_exists('Endroid\QrCode\QrCode'));
+    $OUTPUT->add_label('qrcode');
+}
+
 
 // instantiate a contacts object according to the given source
 function rcmail_contact_source($source=null, $init_env=false, $writable=false)
@@ -455,18 +457,6 @@ function rcmail_contacts_list_title($attrib)
 }
 
 
-// similar function as /steps/settings/identities.inc::rcmail_identity_frame()
-function rcmail_contact_frame($attrib)
-{
-    global $OUTPUT;
-
-    if (!$attrib['id'])
-        $attrib['id'] = 'rcmcontactframe';
-
-    return $OUTPUT->frame($attrib, true);
-}
-
-
 function rcmail_rowcount_display($attrib)
 {
     global $RCMAIL;
@@ -567,7 +557,7 @@ function rcmail_contact_form($form, $record, $attrib = null)
     foreach ($coltypes as $col => $prop) {
         if ($prop['subtypes']) {
             $subtype_names = array_map('rcmail_get_type_label', $prop['subtypes']);
-            $select_subtype = new html_select(array('name' => '_subtype_'.$col.'[]', 'class' => 'contactselectsubtype form-control', 'title' => $prop['label'] . ' ' . $RCMAIL->gettext('type')));
+            $select_subtype = new html_select(array('name' => '_subtype_'.$col.'[]', 'class' => 'contactselectsubtype custom-select', 'title' => $prop['label'] . ' ' . $RCMAIL->gettext('type')));
             $select_subtype->add($subtype_names, $prop['subtypes']);
             $coltypes[$col]['subtypes_select'] = $select_subtype->show();
         }
@@ -755,11 +745,15 @@ function rcmail_contact_form($form, $record, $attrib = null)
                     }
 
                     $colprop['id'] = 'ff_' . $col . intval($coltypes[$field]['count']);
+                    $row_class     = 'row';
 
                     // render composite field
                     if ($colprop['type'] == 'composite') {
-                        $composite = array(); $j = 0;
-                        $template = $RCMAIL->config->get($col . '_template', '{'.join('} {', array_keys($colprop['childs'])).'}');
+                        $row_class .= ' composite';
+                        $composite  = array();
+                        $template   = $RCMAIL->config->get($col . '_template', '{'.join('} {', array_keys($colprop['childs'])).'}');
+                        $j = 0;
+
                         foreach ($colprop['childs'] as $childcol => $cp) {
                             if (!empty($val) && is_array($val)) {
                                 $childvalue = $val[$childcol] ?: $val[$j];
@@ -857,11 +851,11 @@ function rcmail_contact_form($form, $record, $attrib = null)
                             $val .= $_del_btn;
                         }
 
-                        $rows .= html::div('row', $_label . $val);
+                        $rows .= html::div($row_class, $_label . $val);
                     }
                     // row without label
                     else {
-                        $rows .= html::div('row', $compact ? $val : html::div('contactfield', $val));
+                        $rows .= html::div($row_class, $compact ? $val : html::div('contactfield', $val));
                     }
                 }
 

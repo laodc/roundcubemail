@@ -62,12 +62,21 @@ class rcube_sieve
      */
     public function __construct($username, $password='', $host='localhost', $port=2000,
         $auth_type=null, $usetls=true, $disabled=array(), $debug=false,
-        $auth_cid=null, $auth_pw=null, $options=array())
+        $auth_cid=null, $auth_pw=null, $options=array(), $gssapi_principal=null,
+        $gssapi_cname=null)
     {
         $this->sieve = new Net_Sieve();
 
         if ($debug) {
             $this->sieve->setDebug(true, array($this, 'debug_handler'));
+        }
+
+        if (isset($gssapi_principal)) {
+            $this->sieve->setServicePrincipal($gssapi_principal);
+        }
+
+        if (isset($gssapi_cname)) {
+            $this->sieve->setServiceCN($gssapi_cname);
         }
 
         $result = $this->sieve->connect($host, $port, $options, $usetls);
@@ -304,14 +313,10 @@ class rcube_sieve
 
         if ($this->script) {
             $supported = $this->script->get_extensions();
-            foreach ($ext as $idx => $ext_name) {
-                if (!in_array($ext_name, $supported)) {
-                    unset($ext[$idx]);
-                }
-            }
+            $ext       = array_values(array_intersect($ext, $supported));
         }
 
-        return array_values($ext);
+        return $ext;
     }
 
     /**
@@ -320,7 +325,6 @@ class rcube_sieve
     public function get_scripts()
     {
         if (!$this->list) {
-
             if (!$this->sieve) {
                 return $this->_set_error(self::ERROR_INTERNAL);
             }

@@ -25,11 +25,13 @@
  */
 
 $config = array(
-    'error_reporting'         => E_ALL & ~E_NOTICE & ~E_STRICT,
+    'error_reporting' => E_ALL & ~E_NOTICE & ~E_STRICT,
+    'display_errors'  => false,
+    'log_errors'      => true,
     // Some users are not using Installer, so we'll check some
     // critical PHP settings here. Only these, which doesn't provide
     // an error/warning in the logs later. See (#1486307).
-    'mbstring.func_overload'  => 0,
+    'mbstring.func_overload' => 0,
 );
 
 // check these additional ini settings if not called via CLI
@@ -37,6 +39,8 @@ if (php_sapi_name() != 'cli') {
     $config += array(
         'suhosin.session.encrypt' => false,
         'file_uploads'            => true,
+        'session.auto_start'      => false,
+        'zlib.output_compression' => false,
     );
 }
 
@@ -55,6 +59,7 @@ foreach ($config as $optname => $optval) {
 // framework constants
 define('RCUBE_VERSION', '1.4-git');
 define('RCUBE_CHARSET', 'UTF-8');
+define('RCUBE_TEMP_FILE_PREFIX', 'RCMTEMP');
 
 if (!defined('RCUBE_LIB_DIR')) {
     define('RCUBE_LIB_DIR', __DIR__ . '/');
@@ -77,12 +82,8 @@ if (!defined('RCUBE_LOCALIZATION_DIR')) {
 }
 
 // set internal encoding for mbstring extension
-if (function_exists('mb_internal_encoding')) {
-    mb_internal_encoding(RCUBE_CHARSET);
-}
-if (function_exists('mb_regex_encoding')) {
-    mb_regex_encoding(RCUBE_CHARSET);
-}
+mb_internal_encoding(RCUBE_CHARSET);
+mb_regex_encoding(RCUBE_CHARSET);
 
 // make sure the Roundcube lib directory is in the include_path
 $rcube_path = realpath(RCUBE_LIB_DIR . '..');
@@ -98,7 +99,7 @@ if (!preg_match($regexp, $path)) {
 spl_autoload_register('rcube_autoload');
 
 // set PEAR error handling (will also load the PEAR main class)
-PEAR::setErrorHandling(PEAR_ERROR_CALLBACK, 'rcube_pear_error');
+PEAR::setErrorHandling(PEAR_ERROR_CALLBACK, function($err) { rcube::raise_error($err, true); });
 
 
 /**
@@ -170,7 +171,7 @@ function parse_bytes($str)
  */
 function slashify($str)
 {
-  return unslashify($str).'/';
+    return unslashify($str) . '/';
 }
 
 /**
@@ -178,7 +179,7 @@ function slashify($str)
  */
 function unslashify($str)
 {
-  return preg_replace('/\/+$/', '', $str);
+    return rtrim($str, '/');
 }
 
 /**
@@ -425,6 +426,7 @@ if (!function_exists('idn_to_ascii'))
 function rcube_autoload($classname)
 {
     if (strpos($classname, 'rcube') === 0) {
+        $classname = preg_replace('/^rcube_(cache|db|session|spellchecker)_/', '\\1/', $classname);
         $classname = 'Roundcube/' . $classname;
     }
     else if (strpos($classname, 'html_') === 0 || $classname === 'html') {
@@ -452,18 +454,4 @@ function rcube_autoload($classname)
     }
 
     return false;
-}
-
-/**
- * Local callback function for PEAR errors
- */
-function rcube_pear_error($err)
-{
-    $msg = sprintf("ERROR: %s (%s)", $err->getMessage(), $err->getCode());
-
-    if ($info = $err->getUserinfo()) {
-        $msg .= ': ' . $info;
-    }
-
-    error_log($msg, 0);
 }

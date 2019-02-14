@@ -158,10 +158,12 @@ case 'general':
     }
 
     // switch skin (if valid, otherwise unset the pref and fall back to default)
-    if (!$OUTPUT->set_skin($a_user_prefs['skin']))
+    if (!$OUTPUT->check_skin($a_user_prefs['skin'])) {
         unset($a_user_prefs['skin']);
-    else if ($RCMAIL->config->get('skin') != $a_user_prefs['skin'])
+    }
+    else if ($RCMAIL->config->get('skin') != $a_user_prefs['skin']) {
         $OUTPUT->command('reload', 500);
+    }
 
     $a_user_prefs['timezone'] = (string) $a_user_prefs['timezone'];
 
@@ -240,7 +242,6 @@ function rcmail_prefs_input($name, $regex)
     }
 
     if ($value !== null && strlen($value) && !preg_match($regex, $value)) {
-rcube::console($name);
         $value = $RCMAIL->config->get($name);
     }
 

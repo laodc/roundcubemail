@@ -86,6 +86,8 @@ if (is_array($_FILES['_file'])) {
         else {
             $OUTPUT->show_message('importformaterror', 'error');
         }
+
+        $OUTPUT->command('parent.import_state_set', 'error');
     }
     else {
         $IMPORT_STATS = new stdClass;
@@ -172,6 +174,8 @@ if (is_array($_FILES['_file'])) {
         }
 
         $importstep = 'rcmail_import_confirm';
+
+        $OUTPUT->command('parent.import_state_set', $IMPORT_STATS->inserted ? 'reload' : 'ok');
     }
 }
 
@@ -203,6 +207,7 @@ function rcmail_import_form($attrib)
     $attrib += array('id' => "rcmImportForm");
 
     $writable_books = $RCMAIL->get_address_sources(true, true);
+    $max_filesize   = $RCMAIL->upload_init();
 
     $form   = '';
     $table  = new html_table(array('cols' => 2));
@@ -216,7 +221,9 @@ function rcmail_import_form($attrib)
     ));
 
     $table->add('title', html::label('rcmimportfile', $RCMAIL->gettext('importfromfile')));
-    $table->add(null, $upload->show());
+    $table->add(null, $upload->show()
+        . html::div('hint', $RCMAIL->gettext(array('id' => 'importfile', 'name' => 'maxuploadsize', 'vars' => array('size' => $max_filesize))))
+    );
 
     // addressbook selector
     if (count($writable_books) > 1) {
